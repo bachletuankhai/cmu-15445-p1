@@ -26,7 +26,7 @@ struct DiskManagerInner {
     free_slots: Vec<usize>,
 
     flush_log: bool,
-    // something like a future here
+    // something like a future here for async log flushing
     num_flushes: u64,
     num_writes: u64,
     num_deletes: u64,
@@ -104,7 +104,30 @@ impl DiskManager {
         inner.write_log(log_data);
     }
 
+    pub(crate) fn read_log(&self, buffer: &mut [u8], offset: u64) -> bool {
+        let mut inner = self.inner.write().unwrap();
+        inner.read_log(buffer, offset)
+    }
 
+    pub(crate) fn get_num_flushes(&self) -> u64 {
+        let inner = self.inner.read().unwrap();
+        inner.num_flushes
+    }
+
+    pub(crate) fn get_num_writes(&self) -> u64 {
+        let inner = self.inner.read().unwrap();
+        inner.num_writes
+    }
+
+    pub(crate) fn get_num_deletes(&self) -> u64 {
+        let inner = self.inner.read().unwrap();
+        inner.num_deletes
+    }
+
+    pub(crate) fn get_flush_state(&self) -> bool {
+        let inner = self.inner.read().unwrap();
+        inner.flush_log
+    }
 }
 
 impl DiskManagerInner {
@@ -194,8 +217,32 @@ impl DiskManagerInner {
         self.flush_log = false;
     }
 
-    fn read_log(&mut self, buffer: &mut [u8]) {
-        
+    fn read_log(&mut self, buffer: &mut [u8], offset: u64) -> bool {
+        if buffer.len() == 0 {
+            return false;
+        }
+
+        if offset as u64 >= get_file_size(&self.log_file_name).unwrap_or(0) {
+            println!("Buffer size is larger than log file size, reading all available data");
+            return false;
+        }
+
+        if let Err(e) = self.log_io.seek(std::io::SeekFrom::Start(offset)).and_then(|_| self.log_io.read_exact(buffer)) {
+            match e.kind() {
+                std::io::ErrorKind::UnexpectedEof => {
+                    // If we hit the end of the file, we can just return false
+                    println!("I/O error: Read log of size {} hit the end of file at offset {}", buffer.len(), offset);
+                    buffer.fill(0); // Fill the buffer with zeros
+                    return true;
+                },
+                _ => {
+                    println!("Failed to read log data from offset {}: {}", offset, e);
+                    return false;
+                }
+            }
+        }
+
+        true
     }
 
     fn allocate_page(&mut self) -> usize {
